@@ -7,6 +7,7 @@ import {
   ClientCapabilities,
   InitializeRequest,
   InitializeResponse,
+  LoadSessionRequest,
   NewSessionRequest,
   NewSessionResponse,
   PromptRequest,
@@ -38,6 +39,8 @@ import { AddressInfo } from "node:net";
 import { toolInfoFromToolUse, planEntries, toolUpdateFromToolResult } from "./tools.js";
 
 type Session = {
+  claudeCodeSessionId?: string;
+  cwd: string;
   query: Query;
   input: Pushable<SDKUserMessage>;
   cancelled: boolean;
@@ -168,6 +171,7 @@ export class ClaudeAcpAgent implements Agent {
       options,
     });
     this.sessions[sessionId] = {
+      cwd: params.cwd,
       query: q,
       input: input,
       cancelled: false,
@@ -186,6 +190,23 @@ export class ClaudeAcpAgent implements Agent {
     return {
       sessionId,
     };
+  }
+
+  async loadSession(params: LoadSessionRequest): Promise<void> {
+    console.log(`Loading session: ${params.sessionId}`);
+
+    // Check if we already have this session
+    const existingSession = this.sessions[params.sessionId];
+    if (existingSession) {
+      console.log(
+        `Session ${params.sessionId} already exists with Claude session_id: ${existingSession.claudeCodeSessionId}`,
+      );
+      // Keep the existing session with its Claude session_id intact
+      return;
+    }
+
+    // If session doesn't exist, throw an error
+    throw new Error(`Session ${params.sessionId} not found`);
   }
 
   async authenticate(_params: AuthenticateRequest): Promise<void> {
@@ -240,6 +261,8 @@ export class ClaudeAcpAgent implements Agent {
             continue;
           }
 
+          this.tryToStoreClaudeSessionId(params.sessionId, message);
+
           if (
             message.message.model === "<synthetic>" &&
             message.message.content.length === 1 &&
@@ -284,6 +307,26 @@ export class ClaudeAcpAgent implements Agent {
     const response = await this.client.writeTextFile(params);
     this.fileContentCache[params.path] = params.content;
     return response;
+  }
+
+  private tryToStoreClaudeSessionId(sessionId: string, sdkMessage: SDKAssistantMessage | SDKUserMessage) {
+    const session = this.sessions[sessionId];
+    if (!session) {
+      return;
+    }
+    if (
+      "session_id" in sdkMessage &&
+      typeof sdkMessage.session_id === "string" &&
+      sdkMessage.session_id
+    ) {
+      if (session.claudeCodeSessionId !== sdkMessage.session_id) {
+        console.log(
+          `Updating Claude session_id from ${session.claudeCodeSessionId} to ${sdkMessage.session_id}`,
+        );
+        session.claudeCodeSessionId = sdkMessage.session_id;
+        return sdkMessage.session_id;
+      }
+    }
   }
 }
 
